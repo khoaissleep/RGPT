@@ -19,37 +19,96 @@ hostfile
 
 
 # Python
-__pycache__
-*.pyc
-*.egg-info
-dist
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# Log
-*.log
-*.log.*
-*.json
+# Virtual Environment
+venv/
+ENV/
+env/
+.env
 
-# Data
-!**/alpaca-data-conversation.json
-
-# Editor
-.idea
+# IDE
+.idea/
+.vscode/
 *.swp
+*.swo
 
-# Other
+# Output files
+output/
+temp_outputs/
+reconstruction_test/
+
+# Model files
+*.npy
+*.ply
+*.pth
+*.pt
+*.bin
+pretrained/
+
+# Logs
+logs/
+*.log
+
+# OS
 .DS_Store
-wandb
-output
+Thumbs.db
 
 runs
 checkpoints
 checkpoints_bak
 ckpts*
 
-*.pt
-
 playground
 */visualization/*
 
 demo_out
 dataset_pipeline/osdsynth/external/*
+# Thêm các quy tắc .gitignore cho SpatialRGPT
+
+# Thư mục đầu ra
+**/output/
+**/temp_outputs/
+**/reconstruction_test/
+
+# File độ sâu
+**/*.npy
+**/*.ply
+
+# Môi trường Python
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.egg-info/
+**/=*
+**/build/
+**/dist/
+
+# Checkpoint models
+**/pretrained/
+**/*.pth
+**/*.pt
+**/*.bin
+
+# Logs
+**/logs/
+**/*.log 

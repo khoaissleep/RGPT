@@ -16,6 +16,13 @@ from PIL import Image
 from scipy.spatial.transform import Rotation
 from wis3d import Wis3D
 
+# Add UniK3D import
+try:
+    from unik3d.models import UniK3D
+    UNIK3D_AVAILABLE = True
+except ImportError:
+    UNIK3D_AVAILABLE = False
+    print("Warning: UniK3D not available. Will use Metric3D_v2 only.")
 
 class PointCloudReconstruction:
     """Class to reconstruct point cloud from depth maps."""
@@ -34,7 +41,6 @@ class PointCloudReconstruction:
                 self.perspective_fields_model = get_perspective_fields_model(cfg, device)
             elif self.cfg.perspective_model_variant == "geo_calib":
                 from geocalib import GeoCalib
-
                 print(f"Using Geo Calib")
                 self.perspective_fields_model = GeoCalib(weights="distorted").to(device)
             else:
@@ -45,12 +51,61 @@ class PointCloudReconstruction:
 
             # Initialize the Metric3D_v2
             self.depth_model = get_depth_model(device)
+            
+            # Initialize UniK3D if available and enabled
+            self.unik3d_model = None
+            if UNIK3D_AVAILABLE and self.cfg.get("use_unik3d", False):
+                try:
+                    self.unik3d_model = UniK3D.from_pretrained("lpiccinelli/unik3d-vitl")
+                    self.unik3d_model = self.unik3d_model.to(device)
+                    self.logger.info("Successfully initialized UniK3D model")
+                except Exception as e:
+                    self.logger.warning(f"Failed to initialize UniK3D: {e}")
         else:
-            self.perspective_fields_model = self.wilde_camera_model = self.depth_model = None
+            self.perspective_fields_model = self.wilde_camera_model = self.depth_model = self.unik3d_model = None
+
+    def _get_enhanced_depth(self, image_rgb, intrinsic):
+        """Get enhanced depth map by combining Metric3D and UniK3D if available."""
+        # Get depth from Metric3D
+        metric3d_depth = inference_depth(image_rgb, intrinsic, self.depth_model)
+        
+        # If UniK3D is available and enabled, combine with its depth
+        if self.unik3d_model is not None and self.cfg.get("use_unik3d", False):
+            try:
+                # Convert image to tensor format expected by UniK3D
+                rgb_tensor = torch.from_numpy(np.array(image_rgb)).permute(2, 0, 1)
+                unik3d_predictions = self.unik3d_model.infer(rgb_tensor)
+                unik3d_depth = unik3d_predictions["depth"]
+                
+                # Resize UniK3D depth to match Metric3D depth if needed
+                if unik3d_depth.shape != metric3d_depth.shape:
+                    unik3d_depth = cv2.resize(unik3d_depth, 
+                                            (metric3d_depth.shape[1], metric3d_depth.shape[0]),
+                                            interpolation=cv2.INTER_LINEAR)
+                
+                # Combine depths based on config
+                fusion_method = self.cfg.get("depth_fusion", {}).get("method", "weighted_average")
+                if fusion_method == "weighted_average":
+                    weights = self.cfg.get("depth_fusion", {}).get("weights", [0.5, 0.5])
+                    enhanced_depth = weights[0] * metric3d_depth + weights[1] * unik3d_depth
+                elif fusion_method == "selective":
+                    # Use UniK3D depth where confidence is high, otherwise use Metric3D
+                    confidence = unik3d_predictions.get("confidence", np.ones_like(unik3d_depth))
+                    enhanced_depth = np.where(confidence > 0.7, unik3d_depth, metric3d_depth)
+                else:
+                    enhanced_depth = metric3d_depth
+                
+                self.logger.info(f"Successfully combined depths using {fusion_method}")
+                return enhanced_depth
+                
+            except Exception as e:
+                self.logger.warning(f"Failed to get UniK3D depth: {e}. Using Metric3D depth only.")
+                return metric3d_depth
+        
+        return metric3d_depth
 
     def process(self, filename, image_bgr, detections_list):
         """Reconstruct point cloud from depth map."""
-
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         image_rgb_pil = Image.fromarray(image_rgb)
 
@@ -64,7 +119,6 @@ class PointCloudReconstruction:
 
         elif self.cfg.perspective_model_variant == "geo_calib":
             from geocalib.utils import rad2deg
-
             # load image as tensor in range [0, 1] with shape [C, H, W]
             image_geo = torch.tensor((image_rgb.transpose((2, 0, 1))) / 255.0, dtype=torch.float).to(self.device)
             geo_results = self.perspective_fields_model.calibrate(image_geo, camera_model="simple_radial")
@@ -82,8 +136,8 @@ class PointCloudReconstruction:
         # Infer camera intrinsics
         intrinsic, _ = self.wilde_camera_model.inference(image_rgb_pil, wtassumption=False)
 
-        # Infer depth
-        metric_depth = inference_depth(image_rgb, intrinsic, self.depth_model)
+        # Get enhanced depth using combined approach
+        metric_depth = self._get_enhanced_depth(image_rgb, intrinsic)
 
         # Depth to points
         pts3d = depth_to_points(metric_depth[None], intrinsic=intrinsic)
